@@ -348,11 +348,14 @@ spec:
                     description: |-
                       Mode defines how differences should be handled between the Helm manifest
                       and the manifest currently applied to the cluster.
-                      If not explicitly set, it defaults to DiffModeDisabled.
+                      The enabledWithReRender mode also compares a live server-side Helm
+                      render to the stored manifest and triggers an upgrade when it changes.
+                      If not explicitly set, it defaults to disabled.
                     enum:
                     - enabled
                     - warn
                     - disabled
+                    - enabledWithReRender
                     type: string
                 type: object
               healthCheckExprs:

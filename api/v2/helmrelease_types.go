@@ -267,6 +267,10 @@ const (
 type DriftDetectionMode string
 
 var (
+	// DriftDetectionEnabledWithReRender also checks a live server-side render
+	// against the stored manifest and upgrades the release when it changes.
+	DriftDetectionEnabledWithReRender DriftDetectionMode = "enabledWithReRender"
+
 	// DriftDetectionEnabled instructs the controller to actively detect any
 	// changes between the manifest in the Helm storage and the resources
 	// currently existing in the cluster.
@@ -320,8 +324,10 @@ type IgnoreRule struct {
 type DriftDetection struct {
 	// Mode defines how differences should be handled between the Helm manifest
 	// and the manifest currently applied to the cluster.
-	// If not explicitly set, it defaults to DiffModeDisabled.
-	// +kubebuilder:validation:Enum=enabled;warn;disabled
+	// The enabledWithReRender mode also compares a live server-side Helm
+	// render to the stored manifest and triggers an upgrade when it changes.
+	// If not explicitly set, it defaults to disabled.
+	// +kubebuilder:validation:Enum=enabled;warn;disabled;enabledWithReRender
 	// +optional
 	Mode DriftDetectionMode `json:"mode,omitempty"`
 
@@ -340,10 +346,9 @@ func (d DriftDetection) GetMode() DriftDetectionMode {
 	return d.Mode
 }
 
-// MustDetectChanges returns true if the DiffMode is set to DiffModeEnabled or
-// DiffModeWarn.
+// MustDetectChanges returns true if cluster drift detection is enabled.
 func (d DriftDetection) MustDetectChanges() bool {
-	return d.GetMode() == DriftDetectionEnabled || d.GetMode() == DriftDetectionWarn
+	return d.GetMode() == DriftDetectionEnabled || d.GetMode() == DriftDetectionWarn || d.GetMode() == DriftDetectionEnabledWithReRender
 }
 
 // HelmChartTemplate defines the template from which the controller will

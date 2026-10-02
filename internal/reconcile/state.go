@@ -27,6 +27,7 @@ import (
 	helmrelease "helm.sh/helm/v4/pkg/release/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	v2 "github.com/fluxcd/helm-controller/api/v2"
 	"github.com/fluxcd/helm-controller/internal/action"
 	"github.com/fluxcd/helm-controller/internal/digest"
 	interrors "github.com/fluxcd/helm-controller/internal/errors"
@@ -185,6 +186,17 @@ func DetermineReleaseState(ctx context.Context, cfg *action.ConfigFactory, req *
 			remediation := req.Object.GetActiveRemediation()
 			if remediation != nil && !remediation.MustIgnoreTestFailures(testSpec.IgnoreFailures) && cur.HasTestInPhase(helmrelease.HookPhaseFailed.String()) {
 				return ReleaseState{Status: ReleaseStatusFailed, Reason: "release has test in failed phase"}, nil
+			}
+		}
+
+		if req.Object.GetDriftDetection().GetMode() == v2.DriftDetectionEnabledWithReRender && !req.templateChecked {
+			req.templateChecked = true
+			manifest, err := action.RenderUpgrade(ctx, cfg.Build(nil), req.Object, req.Chart, req.Values)
+			if err != nil {
+				return ReleaseState{Status: ReleaseStatusUnknown}, fmt.Errorf("unable to render release: %w", err)
+			}
+			if manifest != rls.Manifest {
+				return ReleaseState{Status: ReleaseStatusOutOfSync, Reason: "rendered manifest has changed"}, nil
 			}
 		}
 

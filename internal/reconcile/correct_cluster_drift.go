@@ -59,7 +59,8 @@ func NewCorrectClusterDrift(configFactory *action.ConfigFactory, recorder record
 }
 
 func (r *CorrectClusterDrift) Reconcile(ctx context.Context, req *Request) error {
-	if req.Object.GetDriftDetection().GetMode() != v2.DriftDetectionEnabled || len(r.diff) == 0 {
+	mode := req.Object.GetDriftDetection().GetMode()
+	if (mode != v2.DriftDetectionEnabled && mode != v2.DriftDetectionEnabledWithReRender) || len(r.diff) == 0 {
 		return nil
 	}
 

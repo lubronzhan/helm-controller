@@ -708,7 +708,9 @@ DriftDetectionMode
 <em>(Optional)</em>
 <p>Mode defines how differences should be handled between the Helm manifest
 and the manifest currently applied to the cluster.
-If not explicitly set, it defaults to DiffModeDisabled.</p>
+The enabledWithReRender mode also compares a live server-side Helm
+render to the stored manifest and triggers an upgrade when it changes.
+If not explicitly set, it defaults to disabled.</p>
 </td>
 </tr>
 <tr>

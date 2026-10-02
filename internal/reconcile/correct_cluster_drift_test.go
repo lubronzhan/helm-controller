@@ -121,6 +121,12 @@ func TestCorrectClusterDrift_Reconcile(t *testing.T) {
 			wantEvent: true,
 		},
 	}
+	liveRender := tests[0]
+	liveRender.name = "corrects cluster drift with live rendering"
+	liveRender.obj = liveRender.obj.DeepCopy()
+	liveRender.obj.Spec.DriftDetection.Mode = v2.DriftDetectionEnabledWithReRender
+	tests = append(tests, liveRender)
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewWithT(t)

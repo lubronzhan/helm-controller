@@ -853,9 +853,38 @@ with a short summary of the detected changes. In addition, a more extensive
 [JSON Patch](https://datatracker.ietf.org/doc/html/rfc6902) summary is logged
 to the controller logs (with `--log-level=debug`).
 
+#### Live template drift detection
+
+Set `.spec.driftDetection.mode` to `enabledWithReRender` to additionally
+re-render the chart using a server-side Helm upgrade dry-run on each
+reconciliation. This evaluates `lookup` and `.Capabilities.APIVersions`
+against the current target cluster, using the release's values, post-renderers,
+and impersonation configuration.
+
+```yaml
+spec:
+  driftDetection:
+    mode: enabledWithReRender
+```
+
+When the rendered non-hook manifest differs from the stored manifest, the
+controller performs a normal Helm upgrade, including its hooks and configured
+remediation. This supports resources appearing or disappearing as live inputs
+change. The check itself does not execute hooks, apply CRDs, or write Helm
+release history. Unchanged manifests continue through normal drift detection
+and correction. Existing modes compare only the stored manifest to live objects.
+
+This opt-in mode adds API requests and rendering cost each interval. Charts
+using random values, timestamps, `.Release.Revision`, or other unstable inputs
+can trigger an upgrade every interval. The dry-run uses upgrade semantics, so
+`.Release.IsInstall` and `.Release.IsUpgrade` may also change the first comparison
+after installation. Hook-only and notes-only changes do not trigger upgrades.
+Ignore rules apply to cluster drift, not to the rendered-manifest comparison.
+A failed dry-run reports a reconciliation error without changing the release.
+
 #### Drift correction
 
-Furthermore, when `.spec.driftDetection.mode` is set to `enabled`, the
+Furthermore, when `.spec.driftDetection.mode` is set to `enabled` or `enabledWithReRender`, the
 controller will attempt to correct the drift by creating and patching the
 resources based on the server-side dry-run apply result.
 

@@ -167,6 +167,7 @@ func (cleanReleaseStrategy) MustStop(current ReconcilerType, _ ReconcilerTypeSet
 
 func (r *AtomicRelease) Reconcile(ctx context.Context, req *Request) error {
 	log := ctrl.LoggerFrom(ctx).V(logger.InfoLevel)
+	req.templateChecked = false
 
 	var (
 		previous ReconcilerTypeSet
@@ -257,6 +258,7 @@ func (r *AtomicRelease) Reconcile(ctx context.Context, req *Request) error {
 			// other action type is not useful, as it would potentially
 			// overwrite more important failure state from an earlier action.
 			if next.Type() == ReconcilerTypeRelease {
+				req.templateChecked = true
 				conditions.MarkUnknown(req.Object, meta.ReadyCondition, meta.ProgressingReason, "%s", reconcilingMsg)
 			}
 
@@ -461,7 +463,7 @@ func (r *AtomicRelease) actionForState(ctx context.Context, req *Request, state 
 		r.eventRecorder.Eventf(req.Object, corev1.EventTypeWarning, v2.DriftDetectedReason, "%s", msg)
 		conditions.MarkTrue(req.Object, v2.DriftedCondition, v2.DriftDetectedReason, "%s", msg)
 
-		if req.Object.GetDriftDetection().GetMode() == v2.DriftDetectionEnabled {
+		if mode := req.Object.GetDriftDetection().GetMode(); mode == v2.DriftDetectionEnabled || mode == v2.DriftDetectionEnabledWithReRender {
 			return NewCorrectClusterDrift(r.configFactory, r.eventRecorder, state.Diff, kube.ManagedFieldsManager), nil
 		}
 

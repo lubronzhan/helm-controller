@@ -83,6 +83,9 @@ type Request struct {
 	// Values is the Helm chart values to be used for the installation or
 	// upgrade.
 	Values helmchartutil.Values
+
+	// templateChecked prevents repeated renders within an atomic release attempt.
+	templateChecked bool
 }
 
 // ActionReconciler is an interface which defines the methods that a reconciler

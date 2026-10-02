@@ -1720,6 +1720,53 @@ func TestAtomicRelease_actionForState(t *testing.T) {
 			},
 		},
 		{
+			name: "drifted release triggers correction with live rendering",
+			state: ReleaseState{Status: ReleaseStatusDrifted, Diff: jsondiff.DiffSet{
+				{
+					Type: jsondiff.DiffTypeCreate,
+					DesiredObject: &unstructured.Unstructured{
+						Object: map[string]any{
+							"apiVersion": "apps/v1",
+							"kind":       "Deployment",
+							"metadata": map[string]any{
+								"name":      "mock",
+								"namespace": "something",
+							},
+						},
+					},
+				},
+			}},
+			spec: func(spec *v2.HelmReleaseSpec) {
+				spec.DriftDetection = &v2.DriftDetection{
+					Mode: v2.DriftDetectionEnabledWithReRender,
+				}
+			},
+			status: func(releases []*helmrelease.Release) v2.HelmReleaseStatus {
+				return v2.HelmReleaseStatus{
+					History: v2.Snapshots{
+						{
+							Name:      mockReleaseName,
+							Namespace: mockReleaseNamespace,
+							Version:   1,
+						},
+					},
+				}
+			},
+			want: &CorrectClusterDrift{},
+			wantEvent: &corev1.Event{
+				Reason: "DriftDetected",
+				Type:   corev1.EventTypeWarning,
+				Message: fmt.Sprintf(
+					"Cluster state of release %s has drifted from the desired state:\n%s",
+					mockReleaseNamespace+"/"+mockReleaseName+".v1",
+					"Deployment/something/mock removed",
+				),
+			},
+			assertConditions: []metav1.Condition{
+				*conditions.TrueCondition(v2.DriftedCondition, v2.DriftDetectedReason, "Cluster state of release mock-ns/mock-release.v1 has drifted from the desired state:\nDeployment/something/mock removed"),
+			},
+		},
+		{
 			name: "drifted release only triggers event if mode is warn",
 			spec: func(spec *v2.HelmReleaseSpec) {
 				spec.DriftDetection = &v2.DriftDetection{

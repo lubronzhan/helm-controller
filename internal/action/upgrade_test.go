@@ -17,15 +17,18 @@ limitations under the License.
 package action
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	. "github.com/onsi/gomega"
 	"helm.sh/helm/v4/pkg/action"
 	helmaction "helm.sh/helm/v4/pkg/action"
+	helmchart "helm.sh/helm/v4/pkg/chart/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v2 "github.com/fluxcd/helm-controller/api/v2"
+	"github.com/fluxcd/helm-controller/internal/testutil"
 )
 
 func Test_newUpgrade(t *testing.T) {
@@ -266,4 +269,29 @@ func Test_newUpgrade(t *testing.T) {
 		g.Expect(got).ToNot(BeNil())
 		g.Expect(got.PostRenderStrategy).To(Equal(action.PostRenderStrategyNoHooks))
 	})
+}
+
+func Test_copyChartForRender(t *testing.T) {
+	g := NewWithT(t)
+	child := testutil.BuildChart(testutil.ChartWithName("child"), testutil.ChartWithValues(map[string]any{"key": "original"}))
+	grandchild := testutil.BuildChart(testutil.ChartWithName("grandchild"))
+	child.AddDependency(grandchild)
+	chart := testutil.BuildChart(testutil.ChartWithDependency(&helmchart.Dependency{Name: "child", Version: "0.1.0"}, child))
+	copied, err := copyChartForRender(chart)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(copied.Dependencies()).To(HaveLen(1))
+	g.Expect(copied.Dependencies()[0].Parent()).To(BeIdenticalTo(copied))
+	g.Expect(copied.Dependencies()[0].Dependencies()).To(HaveLen(1))
+	copied.Dependencies()[0].Values["key"] = "changed"
+	copied.Dependencies()[0].Dependencies()[0].Metadata.Name = "changed"
+	g.Expect(child.Values["key"]).To(Equal("original"))
+	g.Expect(grandchild.Name()).To(Equal("grandchild"))
+}
+
+func Test_renderUpgradeError(t *testing.T) {
+	g := NewWithT(t)
+	cause := errors.New("secret-value")
+	err := &renderUpgradeError{cause: cause}
+	g.Expect(err.Error()).NotTo(ContainSubstring("secret-value"))
+	g.Expect(errors.Is(err, cause)).To(BeTrue())
 }

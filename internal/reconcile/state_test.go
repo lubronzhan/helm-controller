@@ -18,6 +18,7 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -28,8 +29,11 @@ import (
 	helmrelease "helm.sh/helm/v4/pkg/release/v1"
 	helmstorage "helm.sh/helm/v4/pkg/storage"
 	helmdriver "helm.sh/helm/v4/pkg/storage/driver"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/ssa/jsondiff"
@@ -891,4 +895,158 @@ func TestDetermineReleaseState_DriftDetection(t *testing.T) {
 			g.Expect(got).To(Equal(want))
 		})
 	}
+}
+
+func Test_DetermineReleaseState_LiveRender(t *testing.T) {
+	g := NewWithT(t)
+	ctx := context.Background()
+	ns, err := testEnv.CreateNamespace(ctx, "live-render")
+	g.Expect(err).NotTo(HaveOccurred())
+	t.Cleanup(func() { _ = testEnv.Delete(ctx, ns) })
+	obj := &v2.HelmRelease{
+		ObjectMeta: metav1.ObjectMeta{Name: "live-render", Namespace: ns.Name, Generation: 1},
+		Spec: v2.HelmReleaseSpec{
+			DriftDetection: &v2.DriftDetection{Mode: v2.DriftDetectionEnabledWithReRender},
+			CommonMetadata: &v2.CommonMetadata{Labels: map[string]string{"rendered": "true"}},
+		},
+	}
+	getter, err := RESTClientGetterFromManager(testEnv.Manager, ns.Name)
+	g.Expect(err).NotTo(HaveOccurred())
+	cfg, err := action.NewConfigFactory(getter, action.WithStorage(action.DefaultStorageDriver, ns.Name))
+	g.Expect(err).NotTo(HaveOccurred())
+	chart := testutil.BuildChart()
+	chart.Templates = []*helmchartutil.File{
+		{Name: "templates/config.yaml", Data: []byte(`{{ $source := lookup "v1" "ConfigMap" .Release.Namespace "source" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: output
+data:
+  value: {{ if $source }}{{ $source.data.value | quote }}{{ else }}"absent"{{ end }}
+{{ if $source }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: conditional
+data:
+  value: present
+{{ end }}
+`)},
+		{Name: "templates/hook.yaml", Data: []byte(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: upgrade-hook
+  annotations:
+    helm.sh/hook: pre-upgrade
+data:
+  revision: {{ .Release.Revision | quote }}
+`)},
+	}
+	values := helmchartutil.Values{"unchanged": "value"}
+	rls, err := action.Install(ctx, cfg.Build(nil), obj, chart, values)
+	g.Expect(err).NotTo(HaveOccurred())
+	observe := func() {
+		obj.Status.History = v2.Snapshots{release.ObservedToSnapshot(release.ObserveRelease(rls))}
+		obj.Status.ObservedGeneration = obj.Generation
+	}
+	observe()
+	check := func(mode v2.DriftDetectionMode, want ReleaseStatus) {
+		t.Helper()
+		obj.Spec.DriftDetection.Mode = mode
+		state, err := DetermineReleaseState(ctx, cfg, &Request{Object: obj, Chart: chart, Values: values}, nil)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(state.Status).To(Equal(want))
+		stored, err := action.LastRelease(cfg.Build(nil), obj.GetReleaseName())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(stored.Version).To(Equal(rls.Version))
+		g.Expect(stored.Manifest).To(Equal(rls.Manifest))
+		g.Expect(values).To(Equal(helmchartutil.Values{"unchanged": "value"}))
+	}
+	check(v2.DriftDetectionEnabledWithReRender, ReleaseStatusInSync)
+	source := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "source", Namespace: ns.Name}, Data: map[string]string{"value": "first"}}
+	g.Expect(testEnv.Create(ctx, source)).To(Succeed())
+	for _, mode := range []v2.DriftDetectionMode{"", v2.DriftDetectionDisabled, v2.DriftDetectionWarn, v2.DriftDetectionEnabled} {
+		check(mode, ReleaseStatusInSync)
+	}
+	check(v2.DriftDetectionEnabledWithReRender, ReleaseStatusOutOfSync)
+	for _, name := range []string{"conditional", "upgrade-hook"} {
+		err := testEnv.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: name}, &corev1.ConfigMap{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	}
+	rls, err = action.Upgrade(ctx, cfg.Build(nil), obj, chart, values)
+	g.Expect(err).NotTo(HaveOccurred())
+	observe()
+	check(v2.DriftDetectionEnabledWithReRender, ReleaseStatusInSync)
+	source.Data["value"] = "second"
+	g.Expect(testEnv.Update(ctx, source)).To(Succeed())
+	check(v2.DriftDetectionEnabledWithReRender, ReleaseStatusOutOfSync)
+	g.Expect(testEnv.Delete(ctx, source)).To(Succeed())
+	check(v2.DriftDetectionEnabledWithReRender, ReleaseStatusOutOfSync)
+	rls, err = action.Upgrade(ctx, cfg.Build(nil), obj, chart, values)
+	g.Expect(err).NotTo(HaveOccurred())
+	observe()
+	check(v2.DriftDetectionEnabledWithReRender, ReleaseStatusInSync)
+	err = testEnv.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: "conditional"}, &corev1.ConfigMap{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+	// Discovery must see a newly established CRD without a spec generation change.
+	chart.Templates[0].Data = append(chart.Templates[0].Data, []byte(`
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: capabilities
+data:
+  available: {{ .Capabilities.APIVersions.Has "GROUP/v1/Probe" | quote }}
+`)...)
+	group := ns.Name + ".example.com"
+	chart.Templates[0].Data = []byte(strings.ReplaceAll(string(chart.Templates[0].Data), "GROUP", group))
+	rls, err = action.Upgrade(ctx, cfg.Build(nil), obj, chart, values)
+	g.Expect(err).NotTo(HaveOccurred())
+	observe()
+	check(v2.DriftDetectionEnabledWithReRender, ReleaseStatusInSync)
+	crd := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition",
+		"metadata": map[string]any{"name": "probes." + group},
+		"spec": map[string]any{
+			"group": group, "scope": "Namespaced",
+			"names": map[string]any{"plural": "probes", "singular": "probe", "kind": "Probe"},
+			"versions": []any{map[string]any{
+				"name": "v1", "served": true, "storage": true,
+				"schema": map[string]any{"openAPIV3Schema": map[string]any{"type": "object"}},
+			}},
+		},
+	}}
+	// Even a CreateReplace policy must not cause writes during the check.
+	crdData, err := json.Marshal(crd.Object)
+	g.Expect(err).NotTo(HaveOccurred())
+	chart.Files = []*helmchartutil.File{{Name: "crds/probe.json", Data: crdData}}
+	obj.Spec.Upgrade = &v2.Upgrade{CRDs: v2.CreateReplace}
+	check(v2.DriftDetectionEnabledWithReRender, ReleaseStatusInSync)
+	missingCRD := &unstructured.Unstructured{}
+	missingCRD.SetGroupVersionKind(crd.GroupVersionKind())
+	err = testEnv.Get(ctx, types.NamespacedName{Name: crd.GetName()}, missingCRD)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	chart.Files = nil
+
+	g.Expect(testEnv.Create(ctx, crd)).To(Succeed())
+	t.Cleanup(func() { _ = testEnv.Delete(ctx, crd) })
+	g.Eventually(func() ReleaseStatus {
+		state, err := DetermineReleaseState(ctx, cfg, &Request{Object: obj, Chart: chart, Values: values}, nil)
+		if err != nil {
+			return ReleaseStatusUnknown
+		}
+		return state.Status
+	}, "10s", "100ms").Should(Equal(ReleaseStatusOutOfSync))
+
+	// A template error must leave storage unchanged and not expose template data.
+	chart.Templates = append(chart.Templates, &helmchartutil.File{Name: "templates/error.yaml", Data: []byte(`{{ fail "secret-value" }}`)})
+	state, err := DetermineReleaseState(ctx, cfg, &Request{Object: obj, Chart: chart, Values: values}, nil)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).NotTo(ContainSubstring("secret-value"))
+	g.Expect(state.Status).To(Equal(ReleaseStatusUnknown))
+	stored, err := action.LastRelease(cfg.Build(nil), obj.GetReleaseName())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(stored.Version).To(Equal(rls.Version))
 }

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/mitchellh/copystructure"
 	helmaction "helm.sh/helm/v4/pkg/action"
 	helmchartutil "helm.sh/helm/v4/pkg/chart/common"
 	helmchart "helm.sh/helm/v4/pkg/chart/v2"
@@ -133,4 +134,68 @@ func newUpgrade(config *helmaction.Configuration, obj *v2.HelmRelease, opts []Up
 	}
 
 	return upgrade
+}
+
+// RenderUpgrade renders an upgrade using live cluster data without executing
+// hooks, applying CRDs, or writing release storage. Only the non-hook manifest
+// is returned. Copying inputs isolates Helm's dependency and values processing
+// from a subsequent real upgrade.
+func RenderUpgrade(ctx context.Context, config *helmaction.Configuration, obj *v2.HelmRelease,
+	chrt *helmchart.Chart, vals helmchartutil.Values) (string, error) {
+	chartCopy, err := copyChartForRender(chrt)
+	if err != nil {
+		return "", fmt.Errorf("copy chart: %w", err)
+	}
+	valuesCopy, err := copystructure.Copy(vals)
+	if err != nil {
+		return "", fmt.Errorf("copy values: %w", err)
+	}
+	upgrade := newUpgrade(config, obj, []UpgradeOption{func(u *helmaction.Upgrade) {
+		u.DryRunStrategy = helmaction.DryRunServer
+	}})
+	ctx, cancel := context.WithTimeout(ctx, upgrade.Timeout)
+	defer cancel()
+	rendered, err := upgrade.RunWithContext(ctx, release.ShortenName(obj.GetReleaseName()),
+		chartCopy, valuesCopy.(helmchartutil.Values).AsMap())
+	if err != nil {
+		// Template errors can include values from Secrets or live lookups.
+		// Do not expose their contents in conditions, events, or logs.
+		return "", &renderUpgradeError{cause: err}
+	}
+	rls, ok := rendered.(*helmrelease.Release)
+	if !ok {
+		return "", fmt.Errorf("only the Chart API v2 is supported")
+	}
+	return rls.Manifest, nil
+}
+
+// renderUpgradeError preserves the error chain without revealing template data.
+type renderUpgradeError struct {
+	cause error
+}
+
+func (e *renderUpgradeError) Error() string {
+	return "server-side Helm dry-run failed; check chart templates and API access"
+}
+
+func (e *renderUpgradeError) Unwrap() error {
+	return e.cause
+}
+
+// copyChartForRender also copies dependencies, which Helm keeps in unexported
+// fields that copystructure cannot traverse.
+func copyChartForRender(chart *helmchart.Chart) (*helmchart.Chart, error) {
+	copied, err := copystructure.Copy(chart)
+	if err != nil {
+		return nil, err
+	}
+	result := copied.(*helmchart.Chart)
+	for _, dependency := range chart.Dependencies() {
+		child, err := copyChartForRender(dependency)
+		if err != nil {
+			return nil, err
+		}
+		result.AddDependency(child)
+	}
+	return result, nil
 }

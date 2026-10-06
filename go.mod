@@ -227,3 +227,7 @@ require (
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
 )
+
+// Points at helm/helm#32314 (HIP-0025 resource sequencing, caretak3r's
+// feature/hip-0025-sequencing branch), pinned to the commit tested in this spike.
+replace helm.sh/helm/v4 => github.com/caretak3r/helm 916eda6abd45d01b15f33e201ea03a008e47f0ec

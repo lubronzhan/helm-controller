@@ -203,6 +203,15 @@ func DetermineReleaseState(ctx context.Context, cfg *action.ConfigFactory, req *
 			}
 		}
 
+		// Spike patch: best-effort reconstruction of #1583's templateDigest
+		// drift-detection proposal. Real re-render every reconcile, hashed
+		// and compared to the last-observed value (in-memory only).
+		if drifted, err := checkTemplateDigestDrift(ctx, cfg, req); err != nil {
+			ctrl.LoggerFrom(ctx).Error(err, "templateDigest re-render failed")
+		} else if drifted {
+			return ReleaseState{Status: ReleaseStatusOutOfSync, Reason: "templateDigest changed (spike patch)"}, nil
+		}
+
 		return ReleaseState{Status: ReleaseStatusInSync}, nil
 	default:
 		return ReleaseState{Status: ReleaseStatusUnknown}, fmt.Errorf("unable to determine state for release with status '%s'", rls.Info.Status)

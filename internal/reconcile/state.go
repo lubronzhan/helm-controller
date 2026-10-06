@@ -203,16 +203,9 @@ func DetermineReleaseState(ctx context.Context, cfg *action.ConfigFactory, req *
 			}
 		}
 
-		// Spike patch: best-effort reconstruction of #1583's templateDigest
-		// drift-detection proposal. Real re-render every reconcile, hashed
-		// and compared to the last-observed value (in-memory only).
-		if drifted, err := checkTemplateDigestDrift(ctx, cfg, req); err != nil {
-			ctrl.LoggerFrom(ctx).Error(err, "templateDigest re-render failed")
-		} else if drifted {
-			return ReleaseState{Status: ReleaseStatusOutOfSync, Reason: "templateDigest changed (spike patch)"}, nil
-		}
-
-		return ReleaseState{Status: ReleaseStatusInSync}, nil
+		// POC for helm/helm#32624: always attempt an upgrade; patched Helm
+		// makes it a no-op when the render is unchanged.
+		return ReleaseState{Status: ReleaseStatusOutOfSync, Reason: "attempting no-op-if-unchanged upgrade (32624 poc)"}, nil
 	default:
 		return ReleaseState{Status: ReleaseStatusUnknown}, fmt.Errorf("unable to determine state for release with status '%s'", rls.Info.Status)
 	}

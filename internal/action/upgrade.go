@@ -107,6 +107,7 @@ func newUpgrade(config *helmaction.Configuration, obj *v2.HelmRelease, opts []Up
 	}
 
 	upgrade.Namespace = obj.GetReleaseNamespace()
+	upgrade.NoOpIfUnchanged = true
 	upgrade.ResetValues = !obj.GetUpgrade().PreserveValues
 	upgrade.ReuseValues = obj.GetUpgrade().PreserveValues
 	upgrade.MaxHistory = obj.GetMaxHistory()
